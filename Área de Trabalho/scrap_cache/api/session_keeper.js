@@ -62,6 +62,9 @@ const COOKIE_CACHE_CONFIG = {
   ttl: (parseInt(process.env.COOKIE_CACHE_TTL) || 5) * 60 * 1000,  // 5 minutos padrão, configurável via COOKIE_CACHE_TTL
   maxWaitForValidSession: 5 * 60 * 1000,  // Máximo de 5 minutos aguardando sessão válida
   checkInterval: 10000,  // Verificar a cada 10 segundos
+  invalidateOnStartup: process.env.INVALIDATE_CACHE_ON_STARTUP !== 'false',  // Sempre limpar cache ao iniciar (default: true)
+  validationRequired: true,  // Requer validação HTTP antes de usar cache
+  maxValidationAge: 60 * 1000,  // Cache precisa ter sido validado nos últimos 60 segundos
 };
 
 // Configurações de retry para extração de cookies
@@ -144,13 +147,20 @@ class SessionKeeper {
 
       const cacheData = JSON.parse(fs.readFileSync(COOKIE_CACHE_CONFIG.cacheFile, "utf8"));
       const age = Date.now() - cacheData.timestamp;
+      const validatedAge = cacheData.validatedAt ? Date.now() - cacheData.validatedAt : age;
 
       if (age > COOKIE_CACHE_CONFIG.ttl) {
         console.log(`[COOKIE CACHE] ✗ Cache expired (age: ${Math.floor(age / 1000)}s, TTL: ${COOKIE_CACHE_CONFIG.ttl / 1000}s)`);
         return null;
       }
 
-      console.log(`[COOKIE CACHE] ✓ CACHE HIT (${cacheData.cookies.length} cookies, age: ${Math.floor(age / 1000)}s)`);
+      // Verificar se o cache foi validado recentemente
+      if (COOKIE_CACHE_CONFIG.validationRequired && validatedAge > COOKIE_CACHE_CONFIG.maxValidationAge) {
+        console.log(`[COOKIE CACHE] ⚠ Cache validation too old (validated: ${Math.floor(validatedAge / 1000)}s ago, max: ${COOKIE_CACHE_CONFIG.maxValidationAge / 1000}s)`);
+        return null;
+      }
+
+      console.log(`[COOKIE CACHE] ✓ CACHE HIT (${cacheData.cookies.length} cookies, age: ${Math.floor(age / 1000)}s, validated: ${Math.floor(validatedAge / 1000)}s ago)`);
       return cacheData.cookies;
     } catch (error) {
       console.log(`[COOKIE CACHE] ✗ Error loading cache: ${error.message}`);
@@ -166,6 +176,7 @@ class SessionKeeper {
     try {
       const cacheData = {
         timestamp: Date.now(),
+        validatedAt: Date.now(),  // Marca como validado agora
         cookies: cookies
       };
 
@@ -175,7 +186,7 @@ class SessionKeeper {
       );
 
       const ttlMinutes = COOKIE_CACHE_CONFIG.ttl / (60 * 1000);
-      console.log(`[COOKIE CACHE] ✓ CACHE STORE (${cookies.length} cookies, TTL: ${ttlMinutes}min)`);
+      console.log(`[COOKIE CACHE] ✓ CACHE STORE (${cookies.length} cookies, TTL: ${ttlMinutes}min, validated: now)`);
     } catch (error) {
       console.log(`[COOKIE CACHE] ✗ Error saving cache: ${error.message}`);
     }
@@ -193,6 +204,30 @@ class SessionKeeper {
       }
     } catch (error) {
       console.log(`[COOKIE CACHE] ✗ Error invalidating cache: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update cache validation timestamp without changing cookies
+   * Used when cached cookies are validated successfully
+   */
+  updateCacheValidation() {
+    try {
+      if (!fs.existsSync(COOKIE_CACHE_CONFIG.cacheFile)) {
+        return;
+      }
+
+      const cacheData = JSON.parse(fs.readFileSync(COOKIE_CACHE_CONFIG.cacheFile, "utf8"));
+      cacheData.validatedAt = Date.now();
+
+      fs.writeFileSync(
+        COOKIE_CACHE_CONFIG.cacheFile,
+        JSON.stringify(cacheData, null, 2)
+      );
+
+      console.log(`[COOKIE CACHE] ✓ Cache validation timestamp updated`);
+    } catch (error) {
+      console.log(`[COOKIE CACHE] ✗ Error updating cache validation: ${error.message}`);
     }
   }
 
@@ -320,7 +355,9 @@ class SessionKeeper {
             console.log(`[SESSION WAIT] 💾 Criando cache com cookies válidos...`);
             this.saveCookiesToCache(cookies);
           } else {
-            console.log(`[SESSION WAIT] ✅ Cache válido, usando cookies em cache`);
+            console.log(`[SESSION WAIT] ✅ Cache válido, atualizando timestamp de validação`);
+            // Atualiza o timestamp de validação do cache
+            this.updateCacheValidation();
           }
 
           return cookies;
@@ -689,6 +726,18 @@ class SessionKeeper {
     if (this.isStarted) {
       console.log("   SessionKeeper já está iniciado");
       return;
+    }
+
+    // Invalidar cache ao iniciar para evitar cookies expirados
+    if (COOKIE_CACHE_CONFIG.invalidateOnStartup) {
+      console.log("[STARTUP] 🔍 Verificando cache de cookies...");
+      const existingCache = this.loadCookiesFromCacheInternal();
+      if (existingCache && existingCache.length > 0) {
+        console.log("[STARTUP] 🗑️  Cache antigo encontrado - invalidando para garantir cookies frescos");
+        this.invalidateCookieCache();
+      } else {
+        console.log("[STARTUP] ✓ Nenhum cache antigo encontrado");
+      }
     }
 
     console.log(`
