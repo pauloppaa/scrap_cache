@@ -61,7 +61,8 @@ const execAsync = promisify(exec);
 const MQTT_BROKER = process.env.MQTT_BROKER || 'mqtt://195.200.1.71:1883';
 const MQTT_TOPIC = process.env.MQTT_TOPIC || 'auto/mensal/resultado';
 const PROJECT_DIR = '/home/paulo/Área de Trabalho/PRONTO_ENVIA_CSV_DICI';
-const DOWNLOADS_DIR = path.join(PROJECT_DIR, 'api/downloads');
+// IMPORTANTE: CSVs são baixados pelo AUTO_DICI_MENSAL, então procuramos lá
+const DOWNLOADS_DIR = '/home/paulo/Área de Trabalho/AUTO_DICI_MENSAL/api/downloads';
 
 /**
  * Client ID único para conexão MQTT
